@@ -75,27 +75,68 @@ export function createAgentGraph(context: AgentContext) {
         currentStep: state.currentStep + 1,
         healingAttempts: 0,
         needsHealing: false,
+        healingExhausted: false,
+      };
+    })
+
+    // Failure handler - records failed step and moves on
+    .addNode('failStep', async (state: BrowserAgentStateType) => {
+      const action = state.currentAction;
+      logger.error(
+        {
+          step: state.currentStep,
+          action: action?.type,
+          target: action?.target,
+          healingAttempts: state.healingAttempts,
+        },
+        'Step failed after healing exhausted - marking as failed'
+      );
+
+      return {
+        currentStep: state.currentStep + 1,
+        failedSteps: state.failedSteps + 1,
+        healingAttempts: 0,
+        needsHealing: false,
+        healingExhausted: false,
+        results: [
+          {
+            action: action ?? { type: 'unknown', target: 'unknown' },
+            success: false,
+            error: `Healing exhausted after ${state.healingAttempts} attempts: ${state.lastError}`,
+            duration: 0,
+            healingUsed: true,
+          },
+        ],
       };
     })
 
     // Finalize node - creates final result
     .addNode('finalize', async (state: BrowserAgentStateType) => {
-      // Count success based on whether we completed all planned actions
-      // (some intermediate failures are OK if healing recovered)
       const completedSteps = state.currentStep;
       const plannedSteps = state.totalSteps;
+      const failedSteps = state.failedSteps;
 
-      // Task is successful if we completed all planned steps and have extracted data
-      // OR if the last result was successful (indicating recovery from healing)
-      const lastResult = state.results[state.results.length - 1];
-      const lastStepSucceeded = lastResult?.success ?? false;
+      // Task is successful ONLY if:
+      // 1. All planned steps completed, AND
+      // 2. No steps failed due to healing exhaustion, AND
+      // 3. Either we have extracted data OR all results succeeded
+      const allResultsSucceeded = state.results.every((r) => r.success);
+      const hasExtractedData = Object.keys(state.extractedData).length > 0;
 
-      // Success criteria: either all steps completed, or last extraction succeeded
       const success =
-        completedSteps >= plannedSteps ||
-        (lastStepSucceeded && Object.keys(state.extractedData).length > 0);
+        completedSteps >= plannedSteps &&
+        failedSteps === 0 &&
+        (hasExtractedData || allResultsSucceeded);
 
       const totalDuration = state.results.reduce((sum, r) => sum + r.duration, 0);
+
+      // Log clearly if there were failures
+      if (failedSteps > 0) {
+        logger.error(
+          { failedSteps, completedSteps, plannedSteps },
+          'Task completed with FAILURES - some steps could not be healed'
+        );
+      }
 
       const finalResult = {
         success,
@@ -103,12 +144,16 @@ export function createAgentGraph(context: AgentContext) {
         steps: state.results,
         healingAttempts: state.healingHistory,
         duration: totalDuration,
+        failedSteps,
         screenshots: state.results
           .map((r) => r.screenshot)
           .filter((s): s is string => !!s),
       };
 
-      logger.info({ success, duration: totalDuration }, 'Task completed');
+      logger.info(
+        { success, duration: totalDuration, failedSteps, completedSteps },
+        'Task completed'
+      );
 
       return { finalResult };
     })
@@ -155,30 +200,37 @@ export function createAgentGraph(context: AgentContext) {
 
     // Healing outcomes
     .addConditionalEdges('heal', (state: BrowserAgentStateType) => {
-      // If healing exhausted, move to next step anyway
-      if (
-        state.healingAttempts >= context.healingConfig.maxRetries ||
-        !state.needsHealing
-      ) {
+      // If healing was exhausted, route to failStep to record the failure
+      if (state.healingExhausted) {
+        return 'failStep';
+      }
+
+      // If no longer needs healing (successful retry), go to success
+      if (!state.needsHealing) {
         return 'success';
       }
 
-      // Retry the current action
+      // Still needs healing - retry the current action
       const action = state.currentAction;
-      if (!action) return 'success';
+      if (!action) return 'failStep';
 
       switch (action.type) {
         case 'click':
           return 'click';
         case 'fill':
           return 'fill';
+        case 'extract':
+          return 'extract';
         default:
-          return 'success';
+          return 'failStep';
       }
     })
 
     // Success goes back to router
     .addEdge('success', 'router')
+
+    // Failed step goes back to router to continue with remaining steps
+    .addEdge('failStep', 'router')
 
     // Finalize ends
     .addEdge('finalize', END);

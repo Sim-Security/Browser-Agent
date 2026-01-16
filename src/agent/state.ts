@@ -105,6 +105,18 @@ export const BrowserAgentState = Annotation.Root({
     reducer: (_, next) => next,
     default: () => false,
   }),
+
+  // Track steps that failed even after healing exhaustion
+  failedSteps: Annotation<number>({
+    reducer: (_, next) => next,
+    default: () => 0,
+  }),
+
+  // Flag indicating healing was exhausted for current step
+  healingExhausted: Annotation<boolean>({
+    reducer: (_, next) => next,
+    default: () => false,
+  }),
 });
 
 export type BrowserAgentStateType = typeof BrowserAgentState.State;

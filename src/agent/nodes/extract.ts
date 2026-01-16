@@ -80,12 +80,12 @@ export function extractNode(context: AgentContext) {
       const duration = Date.now() - startTime;
       const screenshot = await captureScreenshot(page);
 
-      logger.error({ target, error }, 'Extraction failed');
+      logger.error({ target, error }, 'Extraction failed - will attempt healing');
 
       return {
         screenshot,
         lastError: String(error),
-        needsHealing: false, // Extraction doesn't benefit from healing
+        needsHealing: true, // Enable healing for extraction - may recover with new screenshot
         results: [
           {
             action,

@@ -14,11 +14,12 @@ export function healNode(context: AgentContext) {
     if (state.healingAttempts >= healingConfig.maxRetries) {
       logger.warn(
         { attempts: state.healingAttempts, max: healingConfig.maxRetries },
-        'Healing exhausted'
+        'Healing exhausted - step will be marked as FAILED'
       );
 
       return {
         needsHealing: false,
+        healingExhausted: true, // Signal to graph that this step failed
         healingHistory: [
           {
             attemptNumber: state.healingAttempts,
@@ -74,7 +75,7 @@ Consider:
 
       const detected = await context.vision.findElement(screenshot, healingPrompt);
 
-      if (detected && detected.confidence > 0.5) {
+      if (detected && detected.confidence > 0.6) {
         logger.info(
           {
             target: action.target,
@@ -122,7 +123,7 @@ Consider:
         action.target
       );
 
-      if (scrollDetected && scrollDetected.confidence > 0.5) {
+      if (scrollDetected && scrollDetected.confidence > 0.6) {
         logger.info('Element found after scrolling');
 
         return {
@@ -154,7 +155,7 @@ Consider:
         action.target
       );
 
-      if (waitDetected && waitDetected.confidence > 0.5) {
+      if (waitDetected && waitDetected.confidence > 0.6) {
         logger.info('Element found after waiting');
 
         return {

@@ -6,6 +6,56 @@ const logger = createLogger('llm-client');
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 
+// Retry configuration
+const MAX_RETRIES = 3;
+const BASE_DELAY_MS = 1000;
+
+/**
+ * Utility function to retry async operations with exponential backoff
+ */
+async function withRetry<T>(
+  operation: () => Promise<T>,
+  operationName: string,
+  maxRetries: number = MAX_RETRIES
+): Promise<T> {
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      // Don't retry on certain errors
+      const errorMsg = lastError.message.toLowerCase();
+      if (
+        errorMsg.includes('invalid api key') ||
+        errorMsg.includes('authentication') ||
+        errorMsg.includes('unauthorized')
+      ) {
+        logger.error({ error: lastError.message }, `${operationName} failed with auth error - not retrying`);
+        throw lastError;
+      }
+
+      const delay = BASE_DELAY_MS * Math.pow(2, attempt);
+      logger.warn(
+        { attempt: attempt + 1, maxRetries, delay, error: lastError.message },
+        `${operationName} failed, retrying...`
+      );
+
+      if (attempt < maxRetries - 1) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+  }
+
+  logger.error(
+    { maxRetries, error: lastError?.message },
+    `${operationName} failed after all retries`
+  );
+  throw lastError;
+}
+
 export class LLMClient {
   private config: LLMConfig;
   private anthropicClient: Anthropic | null = null;
@@ -23,11 +73,16 @@ export class LLMClient {
   async complete(prompt: string, systemPrompt?: string): Promise<string> {
     logger.debug({ promptLength: prompt.length, provider: this.config.provider }, 'Sending completion request');
 
-    if (this.config.provider === 'anthropic') {
-      return this.completeAnthropic(prompt, systemPrompt);
-    } else {
-      return this.completeOpenRouter(prompt, systemPrompt);
-    }
+    return withRetry(
+      async () => {
+        if (this.config.provider === 'anthropic') {
+          return this.completeAnthropic(prompt, systemPrompt);
+        } else {
+          return this.completeOpenRouter(prompt, systemPrompt);
+        }
+      },
+      'LLM completion'
+    );
   }
 
   async completeWithImage(
@@ -40,11 +95,16 @@ export class LLMClient {
       'Sending vision request'
     );
 
-    if (this.config.provider === 'anthropic') {
-      return this.completeWithImageAnthropic(prompt, imageBase64, systemPrompt);
-    } else {
-      return this.completeWithImageOpenRouter(prompt, imageBase64, systemPrompt);
-    }
+    return withRetry(
+      async () => {
+        if (this.config.provider === 'anthropic') {
+          return this.completeWithImageAnthropic(prompt, imageBase64, systemPrompt);
+        } else {
+          return this.completeWithImageOpenRouter(prompt, imageBase64, systemPrompt);
+        }
+      },
+      'LLM vision'
+    );
   }
 
   // ============================================================================
